@@ -1,5 +1,4 @@
-"""Apex Store 24/7 PUBG bot. To'g'ridan-to'g'ri token va kalit bilan ishlaydi."""
-import os
+"""Apex Store 24/7 PUBG bot."""
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher, F, Router
@@ -13,7 +12,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from db import Store
 
-# Token va shifrlash kaliti to'g'ridan-to'g'ri kiritildi
 BOT_TOKEN = "8909183843:AAEKsLkNfy6debeVQYy7mr3L-MifdEmup1s"
 ENC_KEY = "ApexStore2026SecureEncryptionKey_!982"
 
@@ -27,19 +25,16 @@ logging.basicConfig(level=logging.INFO)
 router = Router()
 db = Store("store.db", ENC_KEY)
 
-# FSM holatlari
 class AdminStates(StatesGroup):
     add_title = State()
     add_price = State()
     add_descr = State()
     add_login = State()
     add_pass = State()
-    broadcast = State()
 
 class TopupStates(StatesGroup):
     amount = State()
 
-# --- Asosiy menyu ---
 def main_menu(is_admin=False):
     kb = [
         [InlineKeyboardButton(text="🛍 Akkauntlar", callback_data="catalog"),
@@ -71,7 +66,6 @@ async def cb_main(callback: CallbackQuery):
         reply_markup=main_menu(is_admin)
     )
 
-# --- Kabinet ---
 @router.callback_query(F.data == "cabinet")
 async def cb_cabinet(callback: CallbackQuery):
     user = db.get_user(callback.from_user.id)
@@ -92,7 +86,6 @@ async def cb_cabinet(callback: CallbackQuery):
     kb = [[InlineKeyboardButton(text="🔙 Orqaga", callback_data="main_menu")]]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
-# --- Katalog va Xarid ---
 @router.callback_query(F.data == "catalog")
 async def cb_catalog(callback: CallbackQuery):
     accs = db.list_available(limit=10, offset=0)
@@ -149,7 +142,6 @@ async def cb_buy(callback: CallbackQuery):
             parse_mode="Markdown"
         )
 
-# --- Balans to'ldirish ---
 @router.callback_query(F.data == "topup")
 async def cb_topup(callback: CallbackQuery, state: FSMContext):
     await state.set_state(TopupStates.amount)
@@ -176,7 +168,6 @@ async def process_topup_amount(message: Message, state: FSMContext, bot: Bot):
         "Iltimos, adminlar tasdiqlashini kuting."
     )
 
-    # Adminlarga xabar yuborish
     admin_ids = db.admin_ids_by_username(ADMIN_USERNAMES)
     for aid in admin_ids:
         try:
@@ -192,4 +183,106 @@ async def process_topup_amount(message: Message, state: FSMContext, bot: Bot):
                 f"👤 Foydalanuvchi: @{message.from_user.username} (`{message.from_user.id}`)\n"
                 f"💵 Summa: {amount} so'm (ID: {topup_id})",
                 reply_markup=kb,
-                parse
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+@router.callback_query(F.data.startswith("topup_"))
+async def cb_resolve_topup(callback: CallbackQuery, bot: Bot):
+    if not callback.from_user.username or callback.from_user.username.lower() not in ADMIN_USERNAMES:
+        await callback.answer("❌ Siz admin emassiz!", show_alert=True)
+        return
+
+    parts = callback.data.split("_")
+    action = parts[1]
+    topup_id = int(parts[2])
+    approve = (action == "ok")
+
+    t = db.resolve_topup(topup_id, approve)
+    if not t:
+        await callback.answer("❌ Bu so'rov allaqachon bajarilgan yoki topilmadi!", show_alert=True)
+        return
+
+    status_text = "tasdiqlandi ✅" if approve else "rad etildi ❌"
+    await callback.message.edit_text(f"{callback.message.text}\n\nNatija: {status_text}")
+
+    try:
+        if approve:
+            await bot.send_message(t["user_id"], f"✅ Sizning {t['amount']} so'mlik to'lovingiz tasdiqlandi va balansingizga qo'shildi!")
+        else:
+            await bot.send_message(t["user_id"], f"❌ Afsuski, {t['amount']} so'mlik to'lov so'rovingiz rad etildi.")
+    except Exception:
+        pass
+
+@router.callback_query(F.data == "admin_panel")
+async def cb_admin_panel(callback: CallbackQuery):
+    if not callback.from_user.username or callback.from_user.username.lower() not in ADMIN_USERNAMES:
+        await callback.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+
+    st = db.stats()
+    text = (
+        f"⚙️ **Admin Panel**\n\n"
+        f"👥 Foydalanuvchilar: {st['users']}\n"
+        f"📦 Sotuvdagi akkauntlar: {st['available']}\n"
+        f"✅ Sotilganlar: {st['sold']}\n"
+        f"💰 Umumiy tushum: {st['revenue']} so'm\n"
+        f"⏳ Kutilayotgan to'lovlar: {st['pending']}"
+    )
+    kb = [
+        [InlineKeyboardButton(text="➕ Akkaunt qo'shish", callback_data="adm_add")],
+        [InlineKeyboardButton(text="🔙 Asosiy menyu", callback_data="main_menu")]
+    ]
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+
+@router.callback_query(F.data == "adm_add")
+async def cb_adm_add(callback: CallbackQuery, state: FSMContext):
+    if not callback.from_user.username or callback.from_user.username.lower() not in ADMIN_USERNAMES:
+        return
+    await state.set_state(AdminStates.add_title)
+    await callback.message.edit_text("📝 Akkaunt nomini kiriting (masalan: *PUBG Level 75*):", parse_mode="Markdown")
+
+@router.message(AdminStates.add_title)
+async def adm_title(message: Message, state: FSMContext):
+    await state.update_data(title=message.text)
+    await state.set_state(AdminStates.add_price)
+    await message.answer("💵 Akkaunt narxini kiriting (faqat raqam):")
+
+@router.message(AdminStates.add_price)
+async def adm_price(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Faqat raqam kiriting:")
+        return
+    await state.update_data(price=int(message.text))
+    await state.set_state(AdminStates.add_descr)
+    await message.answer("📋 Akkaunt haqida qisqacha ma'lumot (tavsif) kiriting:")
+
+@router.message(AdminStates.add_descr)
+async def adm_descr(message: Message, state: FSMContext):
+    await state.update_data(descr=message.text)
+    await state.set_state(AdminStates.add_login)
+    await message.answer("👤 Akkaunt loginini kiriting (shifrlanib saqlanadi):")
+
+@router.message(AdminStates.add_login)
+async def adm_login(message: Message, state: FSMContext):
+    await state.update_data(login=message.text)
+    await state.set_state(AdminStates.add_pass)
+    await message.answer("🔑 Akkaunt parolini kiriting:")
+
+@router.message(AdminStates.add_pass)
+async def adm_pass(message: Message, state: FSMContext):
+    data = await state.get_data()
+    db.add_account(data["title"], data["price"], data["descr"], data["login"], message.text)
+    await state.clear()
+    await message.answer("✅ Akkaunt muvaffaqiyatli qo'shildi va bazaga saqlandi!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚙️ Admin panel", callback_data="admin_panel")]]))
+
+async def main():
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher(storage=MemoryStorage())
+    dp.include_router(router)
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
